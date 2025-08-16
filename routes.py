@@ -1,10 +1,24 @@
+"""! \file routes.py
+\brief Healthy Habit Tracker – Flask routes and helpers.
+
+This module defines the web routes (login, register, sleep, diet, workout, goals, feedback)
+and helper functions for database access and chart data.
+
+It is documented for Doxygen via the **doxypypy** filter. Docstring fields use
+Sphinx/Napoleon style (``:param:`` / ``:returns:``) which doxypypy converts for Doxygen.
+"""
 
 import psycopg2
 from flask import Flask, render_template, request, redirect
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 
+
 def get_db_connection():
+    """Open and return a new psycopg2 connection to the production database.
+
+    :returns: A new open psycopg2 connection.
+    """
     return psycopg2.connect(
         host="uno-habittracker.cxa4qcikgs1o.us-east-2.rds.amazonaws.com",
         dbname="habit_tracker",
@@ -13,29 +27,47 @@ def get_db_connection():
         port=5432
     )
 
+
+# --- (one-time) connection sanity check / legacy init ---
 conn = get_db_connection()
-
 cur = conn.cursor()
-
 conn.commit()
-
 cur.close()
 conn.close()
-# initializes data for testing purposes
+
 
 class User(UserMixin):
+    """Simple Flask-Login user wrapper backed by the database.
+
+    :param id: The user's database id (user_detail_id).
+    :type id: int | str
+    """
+
     def __init__(self, id):
         self.id = str(id)
         self.username = self.get_username()
 
     def get_id(self):
+        """Return the user id string for Flask-Login.
+
+        :returns: The user id as a string.
+        :rtype: str
+        """
         return self.id
 
     def get_username(self):
+        """Lookup and return the username for this user id.
+
+        :returns: The username or ``None`` on error.
+        :rtype: str | None
+        """
         try:
             conn = get_db_connection()
             cur = conn.cursor()
-            cur.execute("SELECT user_detail_username FROM habits.user_detail WHERE user_detail_id = %s", (self.id,))
+            cur.execute(
+                "SELECT user_detail_username FROM habits.user_detail WHERE user_detail_id = %s",
+                (self.id,)
+            )
             username = cur.fetchone()[0]
             cur.close()
             conn.close()
@@ -44,22 +76,18 @@ class User(UserMixin):
             print(f"Error while getting username: {error}")
             return None
 
+
 def get_data(table_name):
-    """
-    Retrieves all data from a specified table for the current user.
-    
-    Args:
-        table_name (str): The name of the table to query (e.g., 'sleep', 'workout').
-    
-    Returns:
-        list: A list of tuples containing the queried data, or an empty list on error.
+    """Retrieve all rows from a given habits table for the current user.
+
+    :param table_name: Table name without schema (e.g. ``'sleep'``, ``'workout'``).
+    :type table_name: str
+    :returns: List of tuples from the query, newest first; empty list on error.
+    :rtype: list[tuple]
     """
     conn = get_db_connection()
     cur = conn.cursor()
-    
-    # Corrected f-string to properly reference the table within the schema
     query = f"SELECT * FROM habits.{table_name} WHERE user_detail_id = %s ORDER BY {table_name}_date DESC"
-    
     try:
         cur.execute(query, (current_user.id,))
         rows = cur.fetchall()
@@ -71,10 +99,19 @@ def get_data(table_name):
         cur.close()
         conn.close()
 
+
 def _get_feedback_for_user(limit=20):
+    """Fetch recent feedback records for the current user.
+
+    :param limit: Max number of rows to return (default 20).
+    :type limit: int
+    :returns: List of feedback tuples (ordered by created_at DESC).
+    :rtype: list[tuple]
+    """
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(
+        """
         SELECT
             feedback_id,
             feedback_type,
@@ -87,7 +124,9 @@ def _get_feedback_for_user(limit=20):
         WHERE user_detail_id = %s
         ORDER BY created_at DESC
         LIMIT %s
-    """, (current_user.id, limit))
+        """,
+        (current_user.id, limit),
+    )
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -95,22 +134,23 @@ def _get_feedback_for_user(limit=20):
 
 
 def get_chart_data(table_name, date_column, value_column):
-    """
-    Retrieves data for a chart (date and a single value) from a specified table.
-    
-    Args:
-        table_name (str): The name of the table.
-        date_column (str): The name of the column containing the date.
-        value_column (str): The name of the column containing the value for the chart.
-    
-    Returns:
-        list: A list of tuples (date, value) sorted by date, or an empty list on error.
+    """Get (date, value) pairs for a chart from a given table.
+
+    :param table_name: Table (without schema) containing the data.
+    :type table_name: str
+    :param date_column: Name of the date column.
+    :type date_column: str
+    :param value_column: Name of the numeric/value column.
+    :type value_column: str
+    :returns: List of (date, value) tuples sorted by date ASC; empty list on error.
+    :rtype: list[tuple]
     """
     conn = get_db_connection()
     cur = conn.cursor()
-
-    query = f"SELECT {date_column}, {value_column} FROM habits.{table_name} WHERE user_detail_id = %s ORDER BY {date_column}"
-    
+    query = (
+        f"SELECT {date_column}, {value_column} "
+        f"FROM habits.{table_name} WHERE user_detail_id = %s ORDER BY {date_column}"
+    )
     try:
         cur.execute(query, (current_user.id,))
         rows = cur.fetchall()
@@ -121,23 +161,17 @@ def get_chart_data(table_name, date_column, value_column):
     finally:
         cur.close()
         conn.close()
+
+
 def get_goal_data():
-    conn = get_db_connection()
-    """
-    Retrieves goal data
+    """Fetch the user's current goals row.
 
-    Args:
-        None
-
-    Returns:
-        list: A list of a list containing the goal settings for the user.
+    :returns: List of goal rows (usually 0 or 1 entry).
+    :rtype: list[tuple]
     """
     conn = get_db_connection()
     cur = conn.cursor()
-
-    # Corrected f-string to properly reference the table within the schema
-    query = f"SELECT * FROM habits.goals WHERE user_detail_id = %s"
-
+    query = "SELECT * FROM habits.goals WHERE user_detail_id = %s"
     try:
         cur.execute(query, (current_user.id,))
         rows = cur.fetchall()
@@ -149,21 +183,20 @@ def get_goal_data():
         cur.close()
         conn.close()
 
-def diet_tips(diet_data,goal_data):
-    """
-    Takes in Diet and Goal Data and returns a list of tips
-    based on calculations made between the diet data and the goal data
 
-    Args:
-        diet_data (list): A list containing the diet data.
-        goal_data (list): A list containing the goal data
+def diet_tips(diet_data, goal_data):
+    """Compute diet tips based on user logs vs goal.
 
-    Returns:
-        list: A list of tips to be passed into the template and displayed on the webpage
+    :param diet_data: Rows from ``habits.diet`` for the user.
+    :type diet_data: list[tuple]
+    :param goal_data: Rows from ``habits.goals`` for the user.
+    :type goal_data: list[tuple]
+    :returns: A list of human-readable tip strings.
+    :rtype: list[str]
     """
-    tips=[]
+    tips = []
     if diet_data == [] or goal_data == []:
-        tips.append(f"Not enough data yet...")
+        tips.append("Not enough data yet...")
         return tips
     diets = 0
     diet_avg = 0
@@ -183,21 +216,20 @@ def diet_tips(diet_data,goal_data):
         tips.append(f"Your newest ({newest}) is below your goal! Don't let this become a trend.")
     return tips
 
-def workout_tips(work_data,goal_data):
-    """
-    Takes in workout and Goal Data and returns a list of tips
-    based on calculations made between the workout data and the goal data
 
-    Args:
-        work_data (list): A list containing the workout data.
-        goal_data (list): A list containing the goal data
+def workout_tips(work_data, goal_data):
+    """Compute workout tips based on user logs vs goal.
 
-    Returns:
-        list: A list of tips to be passed into the template and displayed on the webpage
+    :param work_data: Rows from ``habits.workout`` for the user.
+    :type work_data: list[tuple]
+    :param goal_data: Rows from ``habits.goals`` for the user.
+    :type goal_data: list[tuple]
+    :returns: A list of human-readable tip strings.
+    :rtype: list[str]
     """
-    tips=[]
+    tips = []
     if work_data == [] or goal_data == []:
-        tips.append(f"Not enough data yet...")
+        tips.append("Not enough data yet...")
         return tips
     works = 0
     work_avg = 0
@@ -211,35 +243,34 @@ def workout_tips(work_data,goal_data):
         tips.append(f"Your Average intensity ({work_avg:.2f}) currently meets or is passing your goal!")
     else:
         tips.append(f"Your Average intensity ({work_avg:.2f}) is currently below your goal!")
-        tips.append(f"If you're using weights, try increasing the weight or amount of reps.")
+        tips.append("If you're using weights, try increasing the weight or amount of reps.")
     if newest >= goal:
         tips.append(f"Your most recent intensity ({newest}) meets or is above your goal!")
         if newest >= 8:
-            tips.append(f"Try not to go too intense too often; it's okay to take a break occasionally.")
+            tips.append("Try not to go too intense too often; it's okay to take a break occasionally.")
     else:
         tips.append(f"Your newest ({newest}) is below your goal!")
-        tips.append(f"If you're taking a break that's okay, but try to increase the intensity when you're ready.")
+        tips.append("If you're taking a break that's okay, but try to increase the intensity when you're ready.")
     return tips
 
-def sleep_tips(sleep_data,goal_data):
-    """
-    Takes in sleep and Goal Data and returns a list of tips
-    based on calculations made between the diet data and the goal data
 
-    Args:
-        sleep_data (list): A list containing the sleep data.
-        goal_data (list): A list containing the goal data
+def sleep_tips(sleep_data, goal_data):
+    """Compute sleep tips based on user logs vs goal.
 
-    Returns:
-        list: A list of tips to be passed into the template and displayed on the webpage
+    :param sleep_data: Rows from ``habits.sleep`` for the user.
+    :type sleep_data: list[tuple]
+    :param goal_data: Rows from ``habits.goals`` for the user.
+    :type goal_data: list[tuple]
+    :returns: A list of human-readable tip strings.
+    :rtype: list[str]
     """
-    tips=[]
+    tips = []
     if sleep_data == [] or goal_data == []:
-        tips.append(f"Not enough data yet...")
+        tips.append("Not enough data yet...")
         return tips
     sleeps = 0
     sleep_len_avg = 0
-    sleep_qual_avg=0
+    sleep_qual_avg = 0
     newest_len = sleep_data[0][1]
     newest_qual = sleep_data[0][4]
     goal_len = goal_data[0][1]
@@ -262,7 +293,7 @@ def sleep_tips(sleep_data,goal_data):
         tips.append(f"Your average quality of sleep({sleep_qual_avg:.2f}) is above your goal! Keep it up!")
     else:
         tips.append(f"Your average quality of sleep ({sleep_qual_avg:.2f}) is currently below your goal!")
-        tips.append(f"For better sleep quality, try not to use any screens for at least an hour before bed.")
+        tips.append("For better sleep quality, try not to use any screens for at least an hour before bed.")
     if newest_qual >= goal_qual:
         tips.append(f"Your most recent sleep ({newest_qual}) meets or is above your goal!")
     else:
@@ -270,35 +301,56 @@ def sleep_tips(sleep_data,goal_data):
     return tips
 
 
+# ---------------------------
+# Flask App + Routes
+# ---------------------------
+
 app = Flask(__name__)
 app.secret_key = 'your_secret_key'
 
-# initialize Login Manager
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
+
 @login_manager.user_loader
 def load_user(user_id):
+    """Load a user by id for Flask-Login.
+
+    :param user_id: The user_detail_id to load.
+    :type user_id: int | str
+    :returns: A ``User`` instance or ``None``.
+    :rtype: User | None
+    """
     conn = get_db_connection()
-    """Loads user info from database to allow login"""
     cur = conn.cursor()
     cur.execute('SELECT * FROM habits.user_detail WHERE user_detail_id = %s', (user_id,))
     user_data = cur.fetchone()
     conn.close()
-
     if user_data:
-        # Pass only the ID to the User class
         return User(id=user_data[0])
     return None
+
 
 @app.route("/")
 @login_required
 def index():
+    """Home page.
+
+    **Methods:** GET
+    """
     return render_template("home.html", user=current_user.username)
+
+
+# -------- Auth --------
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    """Route used to log users into website"""
+    """Log a user in.
+
+    **Methods:** GET, POST
+
+    POST form fields: ``username``, ``password``.
+    """
     if request.method == "POST":
         username = request.form.get("username")
         password = request.form.get("password")
@@ -309,18 +361,23 @@ def login():
         user_data = cur.fetchone()
         conn.close()
 
-        if user_data and check_password_hash(user_data[2], password): #if a user was found password matches:
+        if user_data and check_password_hash(user_data[2], password):
             user = User(id=user_data[0])
-
             login_user(user)
             return redirect('/')
         else:
             return render_template('login.html', error="Incorrect username or password")
     return render_template('login.html')
 
+
 @app.route("/register", methods=["GET", "POST"])
 def register():
-    """Route used to register new users"""
+    """Create a new account.
+
+    **Methods:** GET, POST
+
+    POST form fields: ``username``, ``password``.
+    """
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
@@ -333,7 +390,6 @@ def register():
         existing_user = cur.fetchone()
         if existing_user:
             conn.close()
-
             return render_template('signup.html', error='Username taken!')
 
         cur.execute(
@@ -345,10 +401,29 @@ def register():
         return redirect('/login')
     return render_template('signup.html')
 
+
+@app.route('/logout')
+@login_required
+def logout():
+    """Log the current user out.
+
+    **Methods:** GET
+    """
+    logout_user()
+    return redirect('/login')
+
+
+# -------- Habits --------
+
 @app.route("/sleep", methods=["GET", "POST"])
 @login_required
 def sleep():
-    """Route used to record sleep data"""
+    """Create and list sleep entries.
+
+    **Methods:** GET, POST
+
+    POST fields: ``date``, ``duration``, ``rating``, ``notes``.
+    """
     if request.method == 'POST':
         date = request.form.get('date')
         duration = request.form.get('duration')
@@ -356,45 +431,42 @@ def sleep():
         notes = request.form.get('notes')
 
         user_id = current_user.get_id()
-
         conn = get_db_connection()
         cur = conn.cursor()
-
-        cur.execute("""INSERT INTO
-                                 habits.sleep (
-                                     sleep_duration,
-                                     sleep_date,
-                                     sleep_log,
-                                     sleep_rating,
-                                     user_detail_id
-                                 )
-                             VALUES (
-                                     %s,
-                                     %s,
-                                     %s,
-                                     %s,
-                                     %s);
-         """, (duration, date, notes, rating, user_id))
+        cur.execute(
+            """
+            INSERT INTO habits.sleep (
+                sleep_duration, sleep_date, sleep_log, sleep_rating, user_detail_id
+            ) VALUES (%s, %s, %s, %s, %s);
+            """,
+            (duration, date, notes, rating, user_id),
+        )
         conn.commit()
-
         cur.close()
         conn.close()
-    
+
     sleep_data = get_data("sleep")
     goal_data = get_goal_data()
     tips = sleep_tips(sleep_data, goal_data)
     sleep_chart_data = get_chart_data("sleep", "sleep_date", "sleep_duration")
-    
-    return render_template("sleep.html", 
-                           sleep_data=sleep_data, 
-                           sleep_chart_data=sleep_chart_data,
-                           tips = tips,
-                           user=current_user.username)
+    return render_template(
+        "sleep.html",
+        sleep_data=sleep_data,
+        sleep_chart_data=sleep_chart_data,
+        tips=tips,
+        user=current_user.username,
+    )
+
 
 @app.route("/diet", methods=["GET", "POST"])
 @login_required
 def diet():
-    """Route used to record diet data"""
+    """Create and list diet entries.
+
+    **Methods:** GET, POST
+
+    POST fields: ``date``, ``rating``, ``mealname``, ``notes``.
+    """
     if request.method == 'POST':
         date = request.form.get('date')
         rating = request.form.get('rating')
@@ -402,26 +474,17 @@ def diet():
         mealnotes = request.form.get('notes')
 
         user_id = current_user.get_id()
-
         conn = get_db_connection()
         cur = conn.cursor()
-
-        cur.execute("""INSERT INTO habits.diet (
-                                 diet_name,
-                                 diet_date,
-                                 diet_log,
-                                 diet_rating,
-                                 user_detail_id
-                               )
-                         VALUES (
-                                 %s,
-                                 %s,
-                                 %s,
-                                 %s,
-                                 %s);
-         """,(mealname,date,mealnotes,rating,user_id))
+        cur.execute(
+            """
+            INSERT INTO habits.diet (
+                diet_name, diet_date, diet_log, diet_rating, user_detail_id
+            ) VALUES (%s, %s, %s, %s, %s);
+            """,
+            (mealname, date, mealnotes, rating, user_id),
+        )
         conn.commit()
-
         cur.close()
         conn.close()
 
@@ -429,16 +492,24 @@ def diet():
     goals = get_goal_data()
     tips = diet_tips(diet_data, goals)
     diet_chart_data = get_chart_data("diet", "diet_date", "diet_rating")
-    return render_template("diet.html", 
-                           diet_data=diet_data,
-                           diet_chart_data=diet_chart_data,
-                           tips=tips,
-                           user=current_user.username)
+    return render_template(
+        "diet.html",
+        diet_data=diet_data,
+        diet_chart_data=diet_chart_data,
+        tips=tips,
+        user=current_user.username,
+    )
+
 
 @app.route("/workout", methods=["GET", "POST"])
 @login_required
 def workout():
-    """Route used to record workout data"""
+    """Create and list workout entries.
+
+    **Methods:** GET, POST
+
+    POST fields: ``date``, ``name``, ``duration``, ``intensity``, ``type``, ``rating``, ``notes``.
+    """
     if request.method == 'POST':
         date = request.form.get('date')
         name = request.form.get('name')
@@ -449,53 +520,44 @@ def workout():
         notes = request.form.get('notes')
 
         user_id = current_user.get_id()
-
         conn = get_db_connection()
         cur = conn.cursor()
-
-        cur.execute("""INSERT INTO
-                                 habits.workout (
-                                     workout_name,
-                                     workout_date,
-                                     workout_duration,
-                                     workout_intensity,
-                                     workout_type,
-                                     workout_log,
-                                     workout_rating,
-                                     user_detail_id
-                                 )
-                             VALUES (
-                                     %s,
-                                     %s,
-                                     %s,
-                                     %s,
-                                     %s,
-                                     %s,
-                                     %s,
-                                     %s);
-         """,(name,date,duration,intensity,type,notes,rating,user_id))
+        cur.execute(
+            """
+            INSERT INTO habits.workout (
+                workout_name, workout_date, workout_duration, workout_intensity,
+                workout_type, workout_log, workout_rating, user_detail_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+            """,
+            (name, date, duration, intensity, type, notes, rating, user_id),
+        )
         conn.commit()
         cur.close()
         conn.close()
 
-
     workout_data = get_data("workout")
     goal_data = get_goal_data()
-    tips = workout_tips(workout_data,goal_data)
+    tips = workout_tips(workout_data, goal_data)
     workout_chart_data = get_chart_data("workout", "workout_date", "workout_duration")
-
-    return render_template("workout.html", 
-                           workout_data=workout_data,
-                           workout_chart_data=workout_chart_data,
-                           tips=tips,
-                           user=current_user.username)
-
+    return render_template(
+        "workout.html",
+        workout_data=workout_data,
+        workout_chart_data=workout_chart_data,
+        tips=tips,
+        user=current_user.username,
+    )
 
 
 @app.route('/goals', methods=['GET', 'POST'])
 @login_required
 def goals():
-    """Route used to record goals"""
+    """Create/update and view goals.
+
+    **Methods:** GET, POST
+
+    POST fields: ``duration`` (sleep_len_goal), ``quality`` (better_sleep),
+    ``intense`` (intensity), ``diet`` (diet).
+    """
     if request.method == 'POST':
         moresleep = request.form.get('duration')
         bettersleep = request.form.get('quality')
@@ -504,31 +566,43 @@ def goals():
         user_id = current_user.get_id()
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("""INSERT INTO habits.goals(sleep_len_goal, better_sleep, intensity, diet, user_detail_id)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (user_detail_id) 
-                        DO UPDATE SET 
-                            sleep_len_goal = EXCLUDED.sleep_len_goal, 
-                            better_sleep = EXCLUDED.better_sleep,
-                            intensity=EXCLUDED.intensity,
-                            diet= EXCLUDED.diet""",(moresleep, bettersleep,intensity,diet,user_id))
+        cur.execute(
+            """
+            INSERT INTO habits.goals(sleep_len_goal, better_sleep, intensity, diet, user_detail_id)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (user_detail_id)
+            DO UPDATE SET
+                sleep_len_goal = EXCLUDED.sleep_len_goal,
+                better_sleep   = EXCLUDED.better_sleep,
+                intensity      = EXCLUDED.intensity,
+                diet           = EXCLUDED.diet
+            """,
+            (moresleep, bettersleep, intensity, diet, user_id),
+        )
         conn.commit()
         cur.close()
         conn.close()
-    return render_template("goals.html", user= current_user.username)
+    return render_template("goals.html", user=current_user.username)
+
 
 @app.route("/feedback", methods=["GET", "POST"])
 @login_required
 def feedback():
-    """Route used to provide feedback"""
+    """Submit and list in-app feedback.
+
+    **Methods:** GET, POST
+
+    POST fields: ``type`` (bug|idea|praise), ``page`` (home|sleep|workout|diet|other),
+    ``message``, ``rating`` (1–5), ``email`` (optional).
+    """
     if request.method == "POST":
-        ftype  = (request.form.get("type") or "").strip().lower()   # bug | idea | praise
-        fpage  = (request.form.get("page") or "").strip().lower()   # home | sleep | workout | diet | other
+        ftype  = (request.form.get("type") or "").strip().lower()
+        fpage  = (request.form.get("page") or "").strip().lower()
         msg    = (request.form.get("message") or "").strip()
         rating = request.form.get("rating")
         email  = (request.form.get("email") or "").strip()
 
-        # coerce rating safely
+        # safe rating coercion
         try:
             r_val = int(rating) if rating else None
             if r_val is not None and not (1 <= r_val <= 5):
@@ -538,44 +612,37 @@ def feedback():
 
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO habits.feedback (
-                user_detail_id,
-                feedback_type,
-                feedback_page,
-                feedback_message,
-                feedback_rating,
-                contact_email
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s
-            )
-        """, (current_user.id, ftype, fpage, msg, r_val, email if email else None))
+                user_detail_id, feedback_type, feedback_page,
+                feedback_message, feedback_rating, contact_email
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (current_user.id, ftype, fpage, msg, r_val, email if email else None),
+        )
         conn.commit()
         cur.close()
         conn.close()
         return redirect("/feedback")
 
-    # GET
     fb_rows = _get_feedback_for_user()
     return render_template("feedback.html", user=current_user.username, feedback_data=fb_rows)
 
-@app.route('/logout')
-@login_required
-def logout():
-    """Logs user out"""
-    logout_user()
-    return redirect('/login')
+
+# -------- Errors --------
 
 @app.errorhandler(404)
 def page_not_found(e):
-    """Used when a page is requested that does not exist"""
+    """404 Not Found handler."""
     return render_template("404.html"), 404
 
+
 @app.errorhandler(500)
-def page_not_found(e):
-    """Used when a server-sided error occurs"""
+def internal_error(e):
+    """500 Internal Server Error handler."""
     return render_template("500.html"), 500
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=11596, debug=True)
-
